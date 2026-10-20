@@ -17,6 +17,16 @@ export PATH=../.venv-opentide/bin:$PATH
 export SSL_CERT_FILE="$(python -c 'import certifi;print(certifi.where())')"
 ```
 
+Two machine-local gotchas worth recording, neither caused by OpenTide:
+
+- **No CA bundle** — see the `SSL_CERT_FILE` export above. Without it
+  `opentide setup skills` reports the catalogue as unreachable even though the
+  network is fine.
+- **x86_64 `git`** — `/usr/local/bin/git` is an Intel binary, so the pre-commit
+  hook it spawns inherits x86_64 and the arm64-only `pydantic_core` wheel fails
+  to load (`incompatible architecture`). The hook correctly refused the commit.
+  Use the universal `/usr/bin/git` (or any arm64 build) on this machine.
+
 ## Commands
 
 | # | Command | Comment |
