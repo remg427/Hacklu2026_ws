@@ -2,7 +2,44 @@
     "versions": {
         "layer": "4.5"
     },
-    "techniques": [],
+    "techniques": [
+        {
+            "techniqueID": "T1059.004",
+            "color": "#74c476",
+            "comment": "[THREAT] PHP Core Remote Code Execution (CVE-2026-109618, CVE-2026-109619), [RULE] PHP SAPI Worker Spawning a Command Interpreter or Network Client",
+            "enabled": true
+        },
+        {
+            "techniqueID": "T1071.001",
+            "color": "#74c476",
+            "comment": "[THREAT] PHP Core Remote Code Execution (CVE-2026-109618, CVE-2026-109619), [RULE] PHP SAPI Worker Spawning a Command Interpreter or Network Client",
+            "enabled": true
+        },
+        {
+            "techniqueID": "T1105",
+            "color": "#74c476",
+            "comment": "[THREAT] PHP Core Remote Code Execution (CVE-2026-109618, CVE-2026-109619), [RULE] PHP SAPI Worker Spawning a Command Interpreter or Network Client",
+            "enabled": true
+        },
+        {
+            "techniqueID": "T1190",
+            "color": "#74c476",
+            "comment": "[THREAT] PHP Core Remote Code Execution (CVE-2026-109618, CVE-2026-109619), [RULE] PHP SAPI Worker Spawning a Command Interpreter or Network Client",
+            "enabled": true
+        },
+        {
+            "techniqueID": "T1505.003",
+            "color": "#74c476",
+            "comment": "[THREAT] PHP Core Remote Code Execution (CVE-2026-109618, CVE-2026-109619), [RULE] PHP SAPI Worker Spawning a Command Interpreter or Network Client",
+            "enabled": true
+        },
+        {
+            "techniqueID": "T1552.001",
+            "color": "#fc6b6b",
+            "comment": "[THREAT] PHP Core Remote Code Execution (CVE-2026-109618, CVE-2026-109619)",
+            "enabled": true
+        }
+    ],
     "name": "layer",
     "domain": "enterprise-attack",
     "hideDisabled": false,

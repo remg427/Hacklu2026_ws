@@ -1,0 +1,18 @@
+I'll start by fetching the article, then look at how this repo structures threats, objectives, and rules.Now writing the three objects.Three objects created and wired together. `opentide validate --strict`, `lint --strict` and `deploy --dry-run` all pass (the Sentinel and Splunk previews compile).
+
+**What the article actually supports**
+
+Most of it is pre-disclosure reporting, so I encoded the evidence boundary rather than the headline. Corroborated: PHP confirmed two critical core flaws at CVSS v4.0 9.2 and pulled an out-of-band release to 21 Oct 2026 14:00 UTC after an embargo break; watchTowr reproduced one in a lab and observed no in-the-wild exploitation. Not corroborated: the CVE identifiers and the RCE classification come from researchers, not PHP's advisory; the circulating PoC's attribution to a heap use-after-free in `php_session_rfc1867_callback` is unverified; the ~884,000 no-fix host count is single-sourced. ([Phoenix Security](https://phoenix.security/php-core-rce-cve-2026-109618-109619-critical-remote-code-execution/); content was rephrased for compliance with licensing restrictions.)
+
+That shaped the central design decision: no trigger signature. The vulnerable code is the interpreter, no patch diff is public, and the root cause is asserted rather than demonstrated, so a request-content rule would be guesswork. Everything detects post-exploitation instead.
+
+**`objects/threats/php-core-remote-code-execution-cve-2026-109618-cve-2026-109619.yaml`**
+Criticality High, severity Substantial incident, viability Likely. Terrain is the internet-facing PHP application tier with CI runners and pinned container base images as secondary. Carries both CVEs, T1190/T1059.004/T1105/T1505.003/T1552.001/T1071.001, and the interim mitigations (`session.upload_progress.enabled = Off`, WAF inspection of multipart POSTs on endpoints that take no uploads).
+
+**`objects/objectives/php-core-rce-post-exploitation-on-the-web-application-tier.yaml`**
+Four signals, Independent composition: PHP worker spawns a shell or network client (Critical), web-served file written by the PHP runtime (High), first-seen egress after an inbound burst (Medium), and PHP-FPM crash burst correlated with multipart POST volume (Medium). That last one is the only signal that can fire on *attempted* exploitation, since heap exploitation usually crashes the worker before it lands. Sequence and threshold composition were rejected in-document: a single interpreter bug gives no dependable event ordering, and a successful first attempt produces one execution event.
+
+**`objects/rules/php-sapi-worker-spawning-a-command-interpreter-or-network-client.yaml`**
+Implements signal 1 on both enabled platforms, STAGING, alert severity High. Sentinel parses Sysmon-for-Linux ProcessCreate out of `Syslog` with an indexed term pre-filter ahead of the regex work; Splunk uses `tstats summariesonly=true` over `Endpoint.Processes` with notable, drilldown and RBA objects. Response procedure covers the CLI-vs-web-SAPI distinction, credential rotation scope, and the no-fix branch routing.
+
+**Two things I could not verify.** Live query validation needs a tenant, and neither `sentinel.toml` nor `splunk.toml` has a `[[tenants]]` block, so `validate query --live` refuses for both platforms — the KQL and SPL are unexecuted against a real schema. The rule also depends on parent-image process telemetry (Sysmon for Linux, Falco, Tetragon or EDR); plain auditd `EXECVE` records carry a numeric `ppid` but no parent image and will not satisfy it. Both are declared in the objective's `data.requirements` and in the rule description rather than papered over.
