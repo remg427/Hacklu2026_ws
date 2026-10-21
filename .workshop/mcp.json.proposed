@@ -1,0 +1,46 @@
+{
+  "mcpServers": {
+    "security-detections": {
+      "url": "https://detect.michaelhaag.org/api/mcp/mcp",
+      "headers": {
+        "Authorization": "Bearer ${SECURITY_DETECTIONS_TOKEN}"
+      },
+      "disabled": true
+    },
+    "local-security-detections": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "security-detections-mcp"
+      ],
+      "env": {
+        "SIGMA_PATHS": "/Users/remi/github/Security-Detections-MCP/detections/sigma/rules,/Users/remi/github/Security-Detections-MCP/detections/sigma/rules-threat-hunting"
+      },
+      "disabled": true
+    },
+    "soc-prime-architect": {
+      "url": "https://pubmcps.socprime.com/mcp",
+      "headers": {
+        "Authorization": "Bearer ${SOC_PRIME_TOKEN}",
+        "Accept": "text/event-stream"
+      },
+      "proxy": {
+        "http.proxy": "${EC_PROXY_URL}",
+        "https.proxy": "${EC_PROXY_URL}"
+      },
+      "disabled": false
+    },
+    "opentide": {
+      "command": "/Users/remi/github/.venv-opentide/bin/opentide",
+      "args": [
+        "mcp",
+        "start"
+      ],
+      "env": {
+        "OPENTIDE_REPO_ROOT": "/Users/remi/github/Hacklu2026_ws"
+      },
+      "disabled": false
+    }
+  }
+}
