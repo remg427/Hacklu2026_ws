@@ -5,7 +5,7 @@
 | --- | --- |
 | UUID | `1243b63d-71f0-4073-8c55-9afc9e0e216f` |
 | Schema | `rule::1.0` |
-| Version | `1` |
+| Version | `2` |
 | Created | `2026-10-21` |
 | Modified | `2026-10-21` |
 | TLP | clear (`TLP:CLEAR`) |
@@ -14,23 +14,27 @@
 
 ## References
 ### Public
-- **1**: [https://phoenix.security/php-core-rce-cve-2026-109618-109619-critical-remote-code-execution/](https://phoenix.security/php-core-rce-cve-2026-109618-109619-critical-remote-code-execution/)
-- **2**: [https://nvd.nist.gov/vuln/detail/CVE-2026-109618](https://nvd.nist.gov/vuln/detail/CVE-2026-109618)
-- **3**: [https://nvd.nist.gov/vuln/detail/CVE-2026-109619](https://nvd.nist.gov/vuln/detail/CVE-2026-109619)
+- **1**: [https://calif.io/php2shell/](https://calif.io/php2shell/)
+- **2**: [https://aws.amazon.com/blogs/security/amazon-threat-intelligence-identifies-php2shell-exploitation-prior-to-public-disclosure-in-madpot/](https://aws.amazon.com/blogs/security/amazon-threat-intelligence-identifies-php2shell-exploitation-prior-to-public-disclosure-in-madpot/)
+- **3**: [https://phoenix.security/php-core-rce-cve-2026-109618-109619-critical-remote-code-execution/](https://phoenix.security/php-core-rce-cve-2026-109618-109619-critical-remote-code-execution/)
+- **4**: [https://nvd.nist.gov/vuln/detail/CVE-2026-109618](https://nvd.nist.gov/vuln/detail/CVE-2026-109618)
+- **5**: [https://nvd.nist.gov/vuln/detail/CVE-2026-109619](https://nvd.nist.gov/vuln/detail/CVE-2026-109619)
 
 ## Description
 Alerts when a PHP interpreter or web server worker (php-fpm, php-cgi, php, httpd,
 apache2, nginx) is the parent of a shell, scripting interpreter, download client,
 or network utility on a Linux host.
 
-This is the execution signal of the PHP core RCE post-exploitation objective. It
-deliberately does not attempt to detect exploitation of CVE-2026-109618 or
-CVE-2026-109619 at the request layer: PHP has published no technical detail, the
-root cause attributed by the circulating proof-of-concept is unverified, and the
-vulnerable code is the interpreter itself, so a request-content signature written
-now would be guesswork. What an attacker must do after landing code execution in a
-PHP worker is far more constrained, and shelling out is the first step for almost
-every follow-on action.
+This is the execution signal of the PHP2Shell objective. It stays deliberately
+CVE-agnostic, and the published root cause strengthens rather than weakens that
+choice. Calif generalised its first finding into a reusable pattern (publish or
+destroy state, perform fallible work, then commit, where a nonlocal fatal skips the
+commit and a surviving consumer trusts false state) and that pattern immediately
+produced a second bug, so more siblings are likely. AWS reports the same conclusion
+from the other direction: patch-to-exploit time is collapsing, and defenders should
+invest in detections that do not depend on a per-CVE signature. Attempt-stage
+coverage for these two CVEs specifically lives in signals 4 and 5 of the objective,
+not here.
 
 A true positive proves arbitrary code execution under the web service account. It
 does not prove which vulnerability delivered it: an application-level command
@@ -39,12 +43,28 @@ same observable. That is the point. The rule keeps working for the next PHP
 interpreter flaw and for hosts on no-fix branches (PHP 5.x, 7.x, 8.0, 8.1) that
 will never be patched.
 
+WHY apache2 AND httpd MATTER MORE THAN php-fpm HERE
+
+The SAPI decides which exploitation path works, and the result is the opposite of
+the usual assumption. Under mod_php the interpreter is embedded in the Apache
+worker and request shutdown runs even after a startup failure, so two of the three
+paths give RCE against arbitrary PHP scripts and this rule fires with apache2 or
+httpd as the parent, with no php process anywhere in the ancestry. Under PHP-FPM
+those same two paths take the worker-exit branch (FPM_EXIT_SOFTWARE) and die before
+anything consumes the malformed state, so this rule will not fire for them at all;
+only the application-dependent unserializer path produces execution on PHP-FPM.
+Treat mod_php hosts as the primary surface for this rule and rely on signal 4 for
+PHP-FPM attempt coverage.
+
 What this rule does NOT cover:
   - Memory-only payloads that never spawn a child process. Use the egress signal
     of the objective for those.
   - Web shells dropped but not yet invoked. Use the file-write signal.
-  - Exploitation attempts that crash the worker without achieving execution. Use
-    the PHP-FPM crash-burst signal.
+  - Attempts that exit the PHP-FPM worker without achieving execution, which is
+    how the two startup-stage paths present on PHP-FPM. Use signal 4
+    (memory_limit fatals and worker exits).
+  - The attacker's request shape. Use signal 5, which needs WAF or proxy body
+    inspection that this rule does not require.
   - Hosts with no process-telemetry agent, which is the dominant blind spot on
     shared and managed hosting.
 
@@ -52,10 +72,16 @@ Precision: MEDIUM before tuning, HIGH after. Recall risk: MEDIUM (child binary
 list is enumerated, so a statically linked or renamed dropper evades it).
 
 The child binary list and the environment filter block are the two tuning knobs.
-Enumerate the legitimate PHP callers for each service before promoting this rule
-out of STAGING: deployment and cache-warm hooks, ImageMagick and ffmpeg wrappers,
-mail transport helpers, and composer in a container entrypoint are the usual
-benign parents of a PHP-spawned shell.
+Enumerate the legitimate PHP callers for each service: deployment and cache-warm
+hooks, ImageMagick and ffmpeg wrappers, mail transport helpers, and composer in a
+container entrypoint are the usual benign parents of a PHP-spawned shell.
+
+DEPLOYMENT POSTURE: the quiet tuning window assumed in version 1 no longer exists.
+Exploitation was observed from 2026-10-17, four days before disclosure, and is now
+broad. Deploy alerting from this STAGING configuration and tune against live
+findings rather than holding the rule back until the exclusion list is complete.
+Run the retrospective hunt in step 1 of the analysis procedure before anything
+else.
 
 ## Status
 | Field | Value |
@@ -71,35 +97,69 @@ benign parents of a PHP-spawned shell.
 | `T1105` | [Ingress Tool Transfer](https://attack.mitre.org/techniques/T1105) | Adversaries may transfer tools or other files from an external system into a compromised environment. Tools or files may be copied from an external adversary-controlled system to the victim network through the command and control channel or through alternate protocols such as [ftp](https://attack.mitre.org/software/S0095). Once present, adversaries may also transfer/spread tools between victim devices within a compromised environment (i.e. [Lateral Tool Transfer](https://attack.mitre.org/techniques/T1570)).   On Windows, adversaries may use various utilities to download tools, such as `copy`, `finger`, [certutil](https://attack.mitre.org/software/S0160), and [PowerShell](https://attack.mitre.org/techniques/T1059/001) commands such as <code>IEX(New-Object Net.WebClient).downloadString()</code> and <code>Invoke-WebRequest</code>. On Linux and macOS systems, a variety of utilities also exist, such as `curl`, `scp`, `sftp`, `tftp`, `rsync`, `finger`, and `wget`.(Citation: t1105_lolbas)  A number of these tools, such as `wget`, `curl`, and `scp`, also exist on ESXi. After downloading a file, a threat actor may attempt to verify its integrity by checking its hash value (e.g., via `certutil -hashfile`).(Citation: Google Cloud Threat Intelligence COSCMICENERGY 2023)  Adversaries may also abuse installers and package managers, such as `yum` or `winget`, to download tools to victim hosts. Adversaries have also abused file application features, such as the Windows `search-ms` protocol handler, to deliver malicious files to victims through remote file searches invoked by [User Execution](https://attack.mitre.org/techniques/T1204) (typically after interacting with [Phishing](https://attack.mitre.org/techniques/T1566) lures).(Citation: T1105: Trellix_search-ms)  Files can also be transferred using various [Web Service](https://attack.mitre.org/techniques/T1102)s as well as native or otherwise present tools on the victim system.(Citation: PTSecurity Cobalt Dec 2016) In some cases, adversaries may be able to leverage services that sync between a web-based and an on-premises client, such as Dropbox or OneDrive, to transfer files onto victim systems. For example, by compromising a cloud account and logging into the service's web portal, an adversary may be able to trigger an automatic syncing process that transfers the file onto the victim's machine.(Citation: Dropbox Malware Sync) |
 
 ## Detection model
-- **Objective**: [PHP SAPI worker spawns an OS command interpreter or network client](../objectives/php-core-rce-post-exploitation-on-the-web-application-tier.md#php-sapi-worker-spawns-an-os-command-interpreter-or-network-client) (`386bd7f3-d952-41c6-9268-a3532f0a3329`)
+- **Objective**: [PHP SAPI worker spawns an OS command interpreter or network client](../objectives/php2shell-exploitation-and-post-exploitation-on-the-web-application-tier.md#php-sapi-worker-spawns-an-os-command-interpreter-or-network-client) (`386bd7f3-d952-41c6-9268-a3532f0a3329`)
 
 ## Response
 
 - **Alert severity**: High
 - **Responders**: SOC Tier 2
 ### Procedure
-- **Analysis**: 1. Confirm the parent is genuinely a web-facing SAPI worker, not the PHP CLI.
-   A php-fpm or apache2 parent means the execution came in over a request
-   path. A plain `php` parent may be a cron job or a deployment script, which
-   is a different and usually benign story.
+- **Analysis**: 0. ONE-TIME RETROSPECTIVE HUNT, before triaging any individual alert. AWS
+   observed PHP2Shell exploitation on 2026-10-17, four days before disclosure,
+   so an investigation anchored on the disclosure date starts too late. Run
+   this rule's logic backwards over the full retention window with a floor of
+   2026-10-17 across every web tier host. Coordinated disclosure began
+   2026-08-11 and a researcher published a hash of one finding on 2026-08-05,
+   so an earlier bound cannot be excluded, but no exploitation has been
+   reported before 2026-10-17. Note the practical ceiling: Defender-style
+   endpoint retention is often 30 days, whereas Sentinel workspace retention
+   is usually 90 days or more, so the achievable lookback differs by source.
+1. Confirm the parent is genuinely a web-facing SAPI worker, not the PHP CLI,
+   and record which SAPI. An apache2 or httpd parent means mod_php, where two
+   paths give RCE against arbitrary scripts under default configuration: treat
+   it as the high-probability case. A php-fpm parent means only the
+   application-dependent unserializer path applies, so also check whether the
+   application reaches session_start, session_decode, unserialize or a wrapper
+   such as WordPress's maybe_unserialize. A plain `php` parent may be a cron
+   job or a deployment script, which is usually a different and benign story.
 2. Read the full child command line. Download clients fetching to /tmp, /dev/shm
    or a web root, base64-decoded payloads piped to a shell, reverse-shell
    invocations of nc or socat, and chmod +x on a freshly written file are all
    confirmation. A bare interpreter with no arguments is more often an
    application wrapper.
 3. Pin the host's PHP exposure: record the version serving web requests (not the
-   CLI binary) and the SAPI type. A host on PHP 5.x, 7.x, 8.0 or 8.1 has no
-   upstream fix and should be treated as compromised-until-proven-otherwise.
-4. Correlate against web access logs for the same host in the surrounding
-   minutes, with particular attention to multipart/form-data POSTs and to
-   endpoints that do not accept uploads. Capture the source addresses.
-5. Check for the other objective signals on the same host: new or modified PHP
+   CLI binary) and the SAPI type. Anything from PHP 5.4.0 onward is in scope,
+   and a host on PHP 5.x, 7.x, 8.0 or 8.1 has no upstream fix and should be
+   treated as compromised-until-proven-otherwise.
+4. Correlate against WAF or proxy logs for the same host in the surrounding
+   minutes, looking for the two documented request shapes rather than for
+   multipart POSTs generally: (a) a multipart body carrying many upload parts
+   with filename="" and deeply nested bracket field names such as
+   files[a][b][c], often chunked or over HTTP/2 with no meaningful
+   Content-Length; (b) a multipart POST carrying a session ID and the
+   PHP_SESSION_UPLOAD_PROGRESS field with no file part at all. Shape (b)
+   without a file part is the specific exploitation form; the field on its own
+   also appears in legitimate upload-progress use. Note that ordinary
+   combined-format access logs do not contain POST bodies, so absence of
+   evidence here is usually a telemetry gap, not a negative finding. Capture
+   the source addresses.
+5. Check the source addresses against the anonymisation infrastructure AWS
+   published: 103.216.220.92 (seen 2026-10-17), 31.223.184.166, 37.19.200.5,
+   134.209.159.64, 103.114.163.188, 95.217.98.37 (all 2026-10-21). AWS states
+   these are shared anonymisation infrastructure and not exclusive to this
+   activity, so investigate observations rather than blocking the addresses,
+   and do not treat a non-match as exoneration.
+6. Check for the other objective signals on the same host: new or modified PHP
    files under the web root, and first-seen outbound destinations. Either turns
    this from attempted to established access.
-6. Check PHP-FPM pool logs for worker segfaults or restarts in the preceding
-   window. A crash burst before the execution event is consistent with repeated
-   heap exploitation attempts before one succeeded.
-7. If the activity matches a known deployment or media-processing workflow,
+7. Check PHP error logs and PHP-FPM pool logs for the preceding window. The
+   expected artefact is a fatal error reporting that the allowed memory size
+   was exhausted, because the exploit deliberately drives an allocation past
+   memory_limit to produce a controlled fatal. Segfaults are not the signature.
+   On PHP-FPM, look for clean worker exits rather than crashes. A burst of such
+   fatals before the execution event indicates repeated attempts before one
+   landed, and gives the earliest timestamp to anchor scoping on.
+8. If the activity matches a known deployment or media-processing workflow,
    verify against the change record, then add the specific full process path to
    the environment filter block rather than widening the rule.
 
@@ -122,16 +182,34 @@ Still ambiguous:
     window before anything is restarted. A PHP-FPM reload destroys worker state.
 
 Fleet-wide, independent of this alert:
-  - Patch supported branches (8.2, 8.3, 8.4, 8.5) and restart PHP-FPM or the web
-    server so the new interpreter is actually loaded. Confirm the distribution
-    or hosting provider's backported package covers both CVEs; the major-version
-    label alone does not tell you.
-  - Apply the interim mitigations on anything not yet patched: set
-    session.upload_progress.enabled = Off and reload PHP-FPM, and rate-limit or
-    inspect multipart/form-data POSTs at the WAF for endpoints that do not
-    accept uploads.
+  - Patch. Upgrading is the only complete remediation for both CVEs; AWS and
+    Calif both state that no configuration-only workaround fully addresses
+    them. Patch supported branches (8.2, 8.3, 8.4, 8.5) and restart PHP-FPM or
+    the web server so the new interpreter is actually loaded. Confirm the
+    distribution or hosting provider's backported package covers both CVEs; the
+    major-version label alone does not tell you. Measure this in hours, not
+    days: AWS reports that a multi-day patch SLA now assumes a delay that no
+    longer exists.
+  - Prioritise mod_php hosts. Two of the three paths give RCE against arbitrary
+    PHP scripts there under default configuration, while PHP-FPM is only
+    exposed through the application-dependent unserializer path.
+  - Partial mitigations, where patching is genuinely blocked. These are
+    Calif's, they differ by SAPI, and they do not replace a patch:
+      mod_php   -> memory_limit=-1
+      PHP-FPM   -> session.upload_progress.enabled=0 and memory_limit=-1
+    memory_limit is the common factor because removing the cap removes the
+    fatal the exploit depends on. Flag the trade explicitly to the service
+    owner before applying: memory_limit=-1 removes PHP's memory cap and raises
+    the risk of host memory exhaustion, so it swaps a code-execution risk for
+    an availability risk. It also silences objective signal 4 on that host,
+    since the fatal that signal watches for can no longer occur. Disabling
+    session upload-progress alone closes one path only and does nothing for
+    mod_php.
+  - At the edge, where patching is blocked: consider blocking multipart file
+    uploads after assessing application impact, and apply the AWS WAF
+    mitigations described in AWS's companion post for PHP2Shell.
   - Route PHP 5.x, 7.x, 8.0 and 8.1 hosts to migration or isolation. No upstream
-    fix is coming for them.
+    fix is coming for them, and the affected range reaches back to PHP 5.4.0.
 
 #### Searches
 - **Web shells and other files written under the web root by the PHP runtime** (sentinel)
@@ -153,10 +231,13 @@ Syslog
 | order by TimeGenerated asc
 
 ```
-- **Multipart POST volume and source addresses against the affected host** (splunk)
+- **Multipart POST volume and source addresses against the affected host, from the earliest known exploitation date** (splunk)
 ```text
 ``` Replace index/sourcetype with the tenant web access log macro. ```
-index=web sourcetype=access_combined dest_host="<dest>" earliest=-24h@h latest=now
+``` Window floor is 2026-10-17, the earliest exploitation AWS observed, ```
+``` not the 2026-10-21 disclosure date. ```
+index=web sourcetype=access_combined dest_host="<dest>"
+    earliest="10/17/2026:00:00:00" latest=now
 | search method=POST
 | stats count AS requests,
         dc(uri_path) AS distinct_paths,
@@ -166,6 +247,71 @@ index=web sourcetype=access_combined dest_host="<dest>" earliest=-24h@h latest=n
       BY clientip, status
 | convert ctime(firstTime) ctime(lastTime)
 | sort - requests
+
+```
+- **The two documented PHP2Shell request shapes, where WAF or proxy body inspection exists** (splunk)
+```text
+``` Requires a source that captures or evaluates POST bodies (WAF, reverse ```
+``` proxy, mod_security audit log). Combined-format access logs do NOT ```
+``` contain multipart bodies and will return nothing here. Replace the ```
+``` index and field names with the tenant WAF sourcetype. ```
+index=waf dest_host="<dest>" earliest="10/17/2026:00:00:00" latest=now
+| search content_type="*multipart/form-data*"
+``` Shape A: many empty-filename parts carrying field names nested at least ```
+``` two bracket levels deep, delivered with no meaningful declared length. ```
+``` Thresholds are starting points: set them on the shape (high part count ```
+``` and deep nesting against a small body), not on exact values, because ```
+``` the attacker can vary count, depth and encoding freely. ```
+| eval empty_filename_parts=mvcount(split(request_body, "filename=\"\""))-1
+| rex max_match=0 field=request_body "name=\"(?<nested_fields>[^\"]*\[[^\"]*\[[^\"]*)\""
+| eval nested_field_count=mvcount(nested_fields)
+| eval lengthless=if(match(coalesce(transfer_encoding,""),"(?i)chunked")
+                      OR coalesce(http_version,"")="2", 1, 0)
+| eval shape_a=if(empty_filename_parts>=20 AND nested_field_count>=20, 1, 0)
+``` Shape B: upload-progress field present with no file part at all. The ```
+``` field name is the server's session.upload_progress.name value and only ```
+``` defaults to PHP_SESSION_UPLOAD_PROGRESS. ```
+| eval has_upload_progress=if(match(request_body,"PHP_SESSION_UPLOAD_PROGRESS"), 1, 0)
+| eval has_file_part=if(match(request_body,"filename=\"[^\"]+\""), 1, 0)
+| eval shape_b=if(has_upload_progress=1 AND has_file_part=0, 1, 0)
+| where shape_a=1 OR shape_b=1
+| stats count AS requests,
+        sum(shape_a) AS shape_a_hits,
+        sum(shape_b) AS shape_b_hits,
+        max(empty_filename_parts) AS max_empty_parts,
+        max(nested_field_count) AS max_nested_fields,
+        max(lengthless) AS lengthless_delivery,
+        min(_time) AS firstTime,
+        max(_time) AS lastTime
+      BY clientip, uri_path
+| convert ctime(firstTime) ctime(lastTime)
+| sort 0 - requests
+
+```
+- **memory_limit exhaustion fatals and PHP-FPM worker exits preceding the alert** (sentinel)
+```text
+// The exploit forces a controlled fatal by exceeding memory_limit, so the
+// expected artefact is an out-of-memory fatal, not a segfault. On PHP-FPM
+// the startup-stage paths present as clean worker exits.
+let lookback = 7d;
+let target_host = "<Computer>";
+Syslog
+| where TimeGenerated > ago(lookback)
+| where Computer == target_host
+| where SyslogMessage has_any ("Allowed memory size", "memory_limit",
+                               "exited with code", "exited on signal",
+                               "child exited", "FPM_EXIT_SOFTWARE")
+| extend FatalKind = case(
+      SyslogMessage has "Allowed memory size", "memory_limit exhausted",
+      SyslogMessage has_any ("exited with code", "child exited", "FPM_EXIT_SOFTWARE"), "worker exit",
+      SyslogMessage has "exited on signal", "worker signal exit",
+      "other")
+| summarize Events = count(),
+            FirstSeen = min(TimeGenerated),
+            LastSeen = max(TimeGenerated),
+            Sample = take_any(SyslogMessage)
+         by Computer, ProcessName, FatalKind, bin(TimeGenerated, 1h)
+| order by TimeGenerated asc
 
 ```
 - **Same parent-child pattern across the rest of the web tier, to scope the campaign** (splunk)
@@ -319,16 +465,17 @@ Syslog
 ```mermaid
 flowchart TB
 subgraph "Objectives"
-3c0b7355_2f44_4632_89a9_a9cdb4fa9de9(["PHP Core RCE<br>Post-Exploitation on the<br>Web Application Tier"])
+3c0b7355_2f44_4632_89a9_a9cdb4fa9de9(["PHP2Shell Exploitation<br>and Post-Exploitation on<br>the Web Application Tier"])
 end
 subgraph "Threats"
-05a17237_cf8b_4c14_a8b7_e57886877cf3{{"PHP Core Remote Code<br>Execution<br>CVE-2026-109618,<br>CVE-2026-109619"}}
+05a17237_cf8b_4c14_a8b7_e57886877cf3{{"PHP2Shell - PHP Core<br>Remote Code Execution"}}
 end
 subgraph "Signals"
 386bd7f3_d952_41c6_9268_a3532f0a3329(("PHP SAPI worker spawns<br>an OS command<br>interpreter or network<br>client"))
 5c99727b_3ed8_4538_9757_866f417c22a6(("Web-served file written<br>by the PHP runtime"))
 d7437c01_261e_4aa0_aa8e_4fa7ac6ebde2(("First-seen egress from a<br>web tier host after an<br>inbound request burst"))
-1b25e502_c486_423b_8c19_a1d458e70a87(("PHP-FPM worker crash<br>burst correlated with<br>multipart POST volume"))
+1b25e502_c486_423b_8c19_a1d458e70a87(("PHP memory_limit<br>exhaustion fatals and<br>PHP-FPM worker exits<br>during request parsing"))
+6fc0c236_6f80_4ab1_8dd8_1281096079da(("Multipart request shaped<br>to exhaust the PHP heap<br>or to consume stale<br>session state"))
 end
 1243b63d_71f0_4073_8c55_9afc9e0e216f["PHP SAPI Worker Spawning<br>a Command Interpreter or<br>Network Client"]
 05a17237_cf8b_4c14_a8b7_e57886877cf3 -->|covers| 3c0b7355_2f44_4632_89a9_a9cdb4fa9de9
@@ -337,10 +484,11 @@ end
 3c0b7355_2f44_4632_89a9_a9cdb4fa9de9 --> 5c99727b_3ed8_4538_9757_866f417c22a6
 3c0b7355_2f44_4632_89a9_a9cdb4fa9de9 --> d7437c01_261e_4aa0_aa8e_4fa7ac6ebde2
 3c0b7355_2f44_4632_89a9_a9cdb4fa9de9 --> 1b25e502_c486_423b_8c19_a1d458e70a87
+3c0b7355_2f44_4632_89a9_a9cdb4fa9de9 --> 6fc0c236_6f80_4ab1_8dd8_1281096079da
 ```
 ## Related objects
 | Type | Name | Direction | Relation |
 | --- | --- | --- | --- |
-| Signal | [PHP SAPI worker spawns an OS command interpreter or network client](../objectives/php-core-rce-post-exploitation-on-the-web-application-tier.md#php-sapi-worker-spawns-an-os-command-interpreter-or-network-client) (`386bd7f3-d952-41c6-9268-a3532f0a3329`) | Upstream | signal |
-| Objective | [PHP Core RCE Post-Exploitation on the Web Application Tier](../objectives/php-core-rce-post-exploitation-on-the-web-application-tier.md) (`3c0b7355-2f44-4632-89a9-a9cdb4fa9de9`) | Upstream | objective |
-| Threat | [PHP Core Remote Code Execution (CVE-2026-109618, CVE-2026-109619)](../threats/php-core-remote-code-execution-cve-2026-109618-cve-2026-109619.md) (`05a17237-cf8b-4c14-a8b7-e57886877cf3`) | Upstream | threat |
+| Signal | [PHP SAPI worker spawns an OS command interpreter or network client](../objectives/php2shell-exploitation-and-post-exploitation-on-the-web-application-tier.md#php-sapi-worker-spawns-an-os-command-interpreter-or-network-client) (`386bd7f3-d952-41c6-9268-a3532f0a3329`) | Upstream | signal |
+| Objective | [PHP2Shell Exploitation and Post-Exploitation on the Web Application Tier](../objectives/php2shell-exploitation-and-post-exploitation-on-the-web-application-tier.md) (`3c0b7355-2f44-4632-89a9-a9cdb4fa9de9`) | Upstream | objective |
+| Threat | [PHP2Shell - PHP Core Remote Code Execution](../threats/php2shell-php-core-remote-code-execution.md) (`05a17237-cf8b-4c14-a8b7-e57886877cf3`) | Upstream | threat |

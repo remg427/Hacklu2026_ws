@@ -1,0 +1,233 @@
+name: PHP2Shell - PHP Core Remote Code Execution
+criticality: High
+
+metadata:
+  uuid: 05a17237-cf8b-4c14-a8b7-e57886877cf3
+  schema: threat::1.0
+  version: 2
+  created: 2026-10-21
+  modified: 2026-10-21
+  tlp: clear
+  author: Example Corp SOC
+  organisation:
+    uuid: 7623cc98-5cba-4f15-8498-56fd8ac8d1ec
+    name: Example Corp
+
+threat:
+  description: |
+    Pre-authentication remote code execution in the PHP core interpreter, tracked as
+    CVE-2026-109618 and CVE-2026-109619 and named PHP2Shell by the discovering
+    researchers at Calif. Each is rated CVSS v4.0 9.2. Patched releases shipped
+    2026-10-21 after an embargo break forced the date forward. Exploitation is
+    confirmed, broad, and predates disclosure.
+
+    ROOT CAUSE (confirmed by the discoverers, no longer speculative)
+
+    The bug class is interrupted cleanup. PHP leaves dangling pointers and stale
+    interpreter state when an allocation would exceed memory_limit, or when another
+    fatal error interrupts native code before its normal cleanup completes. Request
+    shutdown then frees memory that surviving state still references. Calif found
+    two general OOM fatal producers and three distinct interruptible points. The
+    earliest affected path dates to PHP 5.4.0, and the paths are exploitable under
+    default configuration.
+
+    HOW THE ATTACKER FORCES THE FATAL
+
+    Two request-shaping tricks, both of which leave structural traces a proxy can
+    see:
+
+      1. post_max_size bypass. PHP compares post_max_size against the declared
+         Content-Length before automatic POST parsing, but does not enforce the same
+         limit against the bytes it actually consumes. A chunked HTTP/1.1 or a
+         lengthless HTTP/2 multipart request therefore passes the check with no
+         meaningful declared length. A configured input-decompression filter creates
+         the same mismatch between compressed and decoded length.
+      2. Memory exhaustion while staying under post_max_size. An RFC1867 upload part
+         with filename="" carries no file data and is not counted toward
+         max_file_uploads, yet PHP still creates all six $_FILES entries (name,
+         full_path, type, tmp_name, error, size). When the field name is nested, for
+         example files[a][b][c], PHP builds that hierarchy separately for each of the
+         six entries, so one short empty-upload record expands into many native
+         HashTables, Buckets and string-key allocations. Hundreds of such records
+         exceed the default 128 MiB heap while the whole body stays under the default
+         8 MiB post_max_size.
+
+    THREE EXPLOITATION PATHS, AND WHY THE SAPI DECIDES EVERYTHING
+
+    This is the most operationally important part of the writeup, because it inverts
+    the usual assumption that PHP-FPM is the main surface.
+
+      Path 1, Apache mod_php, PHP >= 7.3, arbitrary PHP scripts.
+        _zend_hash_str_add_or_update_i increments both nNumUsed and nNumOfElements
+        before the bucket is initialised, so the bucket becomes teardown-visible
+        before its key allocation. A fatal in that allocation skips the key, hash and
+        zval assignments while the count stays incremented, and teardown later
+        consumes stale bytes as a live bucket. Reached through ordinary request
+        variable registration during php_request_startup(), before the target script
+        runs.
+
+      Path 2, Apache mod_php, PHP >= 5.4.0, arbitrary PHP scripts.
+        Session upload-progress opens and updates a session while the request body is
+        still being parsed, before PHP considers its modules activated. If parsing
+        fatals, the multipart END callback is skipped and request shutdown gates
+        extension shutdown on the activation flag, so session RSHUTDOWN never runs.
+        The heap is freed anyway and the Apache worker survives with PS(id) and
+        PS(http_session_vars) dangling. A second multipart request carrying a session
+        ID and the PHP_SESSION_UPLOAD_PROGRESS field but NO file part reaches
+        MULTIPART_EVENT_END without passing FILE_START, so the early session reset
+        never happens and cleanup operates on freed state.
+
+      Path 3, Apache mod_php and PHP-FPM, application-dependent.
+        PHP's generic unserializer publishes shared bookkeeping in the Basic
+        extension's globals. A fatal inside a live decode skips
+        php_var_unserialize_destroy(), leaving BG(unserialize).data dangling with a
+        nonzero nesting level. Because this fatal lands after successful request
+        startup, PHP-FPM keeps the worker. The next multipart request reaches session
+        upload-progress before Basic's RINIT and the stale nesting level makes the
+        dangling pointer look like an active nested decoder. Requires the application
+        to expose a reachable post-startup decode: session_start(), session_decode(),
+        unserialize(), or a wrapper such as WordPress's maybe_unserialize().
+
+      The asymmetry: on mod_php, PHP runs inside the Apache worker and request
+      shutdown executes even after startup failure, so the malformed state is
+      consumed and the worker is reused. On PHP-FPM, a startup failure takes the
+      process-exit branch (FPM_EXIT_SOFTWARE) and the worker dies before anything
+      can consume the state, which is why paths 1 and 2 do not apply to it. mod_php
+      is therefore the critical surface: universally exploitable against arbitrary
+      scripts. PHP-FPM is exploitable only through path 3 and only where the
+      application decodes attacker-influenced or memory-pressure-adjacent data.
+
+    CONFIRMED PRE-AUTH RCE TARGETS
+
+    Calif confirmed pre-authentication RCE against WordPress 7.1.2, Drupal 11.4.3,
+    Joomla 6.1.4, MediaWiki 1.46.2, Roundcube 1.7.4, Magento 2.4.9, phpMyAdmin 5.2.3,
+    Nextcloud 35.0.1, Laravel 13.11, Symfony 8.1 and WHMCS, plus arbitrary PHP
+    scripts in some instances. This is not a niche configuration issue.
+
+    EXPLOITATION IN THE WILD, EARLIER THAN DISCLOSURE
+
+    Amazon Threat Intelligence found a PHP2Shell exploitation attempt in MadPot
+    honeypot telemetry dated 2026-10-17, four days before disclosure, from an IP
+    associated with a commercial anonymisation network. Further attempts followed
+    between 02:00 and 08:00 UTC on 2026-10-21, before the 14:00 UTC embargo lift,
+    with varied payloads and anonymisation infrastructure suggesting multiple
+    distinct actors. More proof-of-concept code appeared within hours of the release
+    and was used against AWS sensors almost immediately. It is now broadly exploited.
+
+    Investigations should start from 2026-10-17 at the latest, not from the
+    disclosure date. Coordinated disclosure ran from 2026-08-11 and a researcher
+    published a hash of one finding on 2026-08-05, so an earlier bound cannot be
+    excluded, though no exploitation has been reported before 2026-10-17.
+
+    LINEAGE: EXPECT SIBLINGS
+
+    The class has a twenty-year history. Stefan Esser found the first PHP memory
+    limit remote vulnerability in 2004; bug #78876 (multipart/form-data causing OOM)
+    was reported in 2020 and incidentally shielded HHVM; OSTIF and Quarkslab
+    identified a related issue in a 2024 audit without proving exploitation. Calif
+    generalised its first finding into a reusable pattern (publish or destroy state,
+    then perform fallible work, then initialise or commit, where a nonlocal fatal
+    during the fallible work skips the commit and a surviving consumer trusts false
+    state) and that pattern immediately produced the second finding. Two consequences
+    for detection: more siblings are likely in PHP and in comparable interpreters, and
+    CVE-specific signatures will age badly. Detection content for this threat should
+    key on the mechanism and on post-exploitation behaviour, not on these two CVE
+    identifiers.
+
+    MITIGATION REALITY
+
+    Patching is the only complete remediation. Both AWS and Calif state plainly that
+    no configuration-only workaround fully addresses both issues. Calif's temporary,
+    partial mitigations are not what the early reporting suggested, and differ by
+    SAPI:
+
+      - mod_php: set memory_limit=-1.
+      - PHP-FPM: set session.upload_progress.enabled=0 and memory_limit=-1.
+
+    memory_limit is the common factor, because removing the cap removes the fatal the
+    exploit depends on. That trade is not free: memory_limit=-1 removes PHP's memory
+    cap and raises the risk of host memory exhaustion, so it is a deliberate
+    availability trade, not a safe default. Disabling session upload-progress alone
+    closes only one path and does nothing for mod_php. AWS additionally suggests
+    blocking multipart file uploads where patching is blocked, after assessing
+    application impact, and publishes an AWS WAF mitigation guide.
+
+    Content in this description was rephrased from the sources in the references for
+    compliance with licensing restrictions.
+  severity: Significant incident
+  impact:
+    - Data Breach
+    - Business disruption
+    - Reputational Damages
+    - Monetary Loss
+  leverage:
+    - Infrastructure Compromise
+    - Dwelling
+    - Software installation
+    - Elevation of privilege
+    - Information Disclosure
+    - Process Manipulation
+  viability: Very Likely
+  terrain: |
+    Ranked by exploitability, not by population.
+
+    Critical: Apache with mod_php on PHP 5.4.0 or later, internet-facing. Paths 1 and
+    2 give RCE against arbitrary PHP scripts under default configuration, with no
+    application precondition and no authentication.
+
+    High: PHP-FPM and php-cgi behind Apache HTTP or NGINX, where the application
+    performs a reachable post-startup decode (session_start, session_decode,
+    unserialize, or wrappers such as WordPress's maybe_unserialize). Path 3 only, so
+    exploitability is application-dependent, but the qualifying call is present in
+    most real CMS and framework stacks.
+
+    The affected application population covers CMS and e-commerce (WordPress,
+    WooCommerce, Drupal, Joomla, Magento and Adobe Commerce), collaboration and
+    webmail (MediaWiki, Nextcloud, Roundcube), administration interfaces
+    (phpMyAdmin, WHMCS) and framework-based bespoke applications (Laravel, Symfony).
+
+    Secondary: CI runners executing PHP build and test code, and container images
+    pinning a PHP base layer, where a rebuild rather than a package update is needed.
+    Shared and managed hosting concentrates the unpatchable population and sits
+    outside direct control.
+
+    Inventory note: record the version and SAPI that actually serves web requests.
+    The CLI binary and the web SAPI can differ on the same host, and the SAPI
+    determines which of the three paths apply.
+  surface:
+    - Application::Runtime Environments
+    - Application::Web Servers::Apache HTTP
+    - Application::Web Servers::NGINX
+    - Application::CMS::WordPress
+    - Application::CMS::Drupal
+    - Application::CMS::Joomla
+    - OS::Linux
+    - Protocol::Application Layer::HTTP
+    - Protocol::Application Layer::HTTPS
+  mitre_attack:
+    - T1190
+    - T1059.004
+    - T1105
+    - T1505.003
+    - T1552.001
+    - T1071.001
+  killchain:
+    - Exploitation
+    - Execution
+    - Persistence
+    - Credential Access
+    - Command & Control
+  cve:
+    - CVE-2026-109618
+    - CVE-2026-109619
+
+references:
+  public:
+    1: https://calif.io/php2shell/
+    2: https://aws.amazon.com/blogs/security/amazon-threat-intelligence-identifies-php2shell-exploitation-prior-to-public-disclosure-in-madpot/
+    3: https://phoenix.security/php-core-rce-cve-2026-109618-109619-critical-remote-code-execution/
+    4: https://nvd.nist.gov/vuln/detail/CVE-2026-109618
+    5: https://nvd.nist.gov/vuln/detail/CVE-2026-109619
+    6: https://www.php.net/supported-versions.php
+    7: https://www.php.net/eol.php
+    8: https://bugs.php.net/bug.php?id=78876
