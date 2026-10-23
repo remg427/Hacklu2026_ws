@@ -42,13 +42,17 @@ object_types = ["threat", "objective", "rule"]
 # here only if sharing work-in-progress rules is intended.
 rule_statuses = ["PRODUCTION"]
 
-# Optional override of metadata.organisation.uuid on EVERY object in this
-# block. It must match the organisation owning the API key on the instance.
-# Left unset deliberately: this corpus holds two organisations
-# (7623cc98… Example Corp and 56b0a0f0… EC DIGIT CSOC) and a block-level value
-# would stamp one of them onto the other's objects. Fix objects that lack
-# metadata.organisation instead.
-# organisation_uuid = "7623cc98-5cba-4f15-8498-56fd8ac8d1ec"
+# Override of metadata.organisation.uuid on EVERY object in this block. It must
+# match the organisation owning the API key, which on this instance is
+# MIRESEC (305d4e1e-80d2-4592-a1d7-b9cec29bb626). Without it, objects carrying
+# 7623cc98… Example Corp or 56b0a0f0… EC DIGIT CSOC fail with
+# organisation_uuid_mismatch.
+#
+# CAVEAT: this stamps MIRESEC onto every object regardless of the organisation
+# recorded in the object itself. Acceptable on a lab instance where MIRESEC owns
+# the key; on a real instance, create the matching organisations there instead,
+# or use one block per organisation.
+organisation_uuid = "305d4e1e-80d2-4592-a1d7-b9cec29bb626"
 
 # Create events unpublished. Flip to true, or pass --publish, once reviewed.
 publish = false
