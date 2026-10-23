@@ -1,0 +1,56 @@
+# Sharing destinations. One [[misp]] block per MISP instance.
+# `misp` is the only supported integration; any other table name is skipped
+# with an unknown_integration warning.
+#
+# SECRETS: api_key must be a ${ENV_VAR} reference. A literal value is redacted
+# and raises an api_key_literal warning. Keep the secret in ~/.env (mode 600,
+# outside every git repo) and let the shell export it.
+#
+# Check this file with:
+#   opentide validate --check sharing-config --strict
+#   opentide share targets
+#   opentide share preview          # resolves locally, makes no request
+#   opentide share status           # compares the local ledger, no request
+
+[[misp]]
+# Lowercase, digits, hyphen or underscore, max 64 chars.
+name = "hacklu-misp"
+
+# A disabled block is invisible to preview, status, push and retract: all four
+# exit "No sharing target matched the request". Left true so preview works;
+# nothing can leave the machine while url is a placeholder and MISP_API_KEY is
+# unset.
+enabled = true
+
+# REPLACE with the real instance before anything is pushed.
+url = "https://mylab.miresec.fr:8443"
+
+# Resolved from the environment at run time, never stored here.
+api_key = "${MISP_API_KEY}"
+
+# TLP ceiling. Objects above it are skipped with reason max_tlp.
+# Order: clear < green < amber < amber+strict < red.
+# Every current object is tlp: clear, so any ceiling passes them.
+max_tlp = "green"
+
+# Object families to publish. Default is all three. Signals are not separate
+# events; they travel inside their objective.
+object_types = ["threat", "objective", "rule"]
+
+# Rule status gate, and the default. The PHP2Shell rule is STAGING, so it is
+# reported as skipped_status / rule_status until it is promoted. Add "STAGING"
+# here only if sharing work-in-progress rules is intended.
+rule_statuses = ["PRODUCTION"]
+
+# Optional override of metadata.organisation.uuid on EVERY object in this
+# block. It must match the organisation owning the API key on the instance.
+# Left unset deliberately: this corpus holds two organisations
+# (7623cc98… Example Corp and 56b0a0f0… EC DIGIT CSOC) and a block-level value
+# would stamp one of them onto the other's objects. Fix objects that lack
+# metadata.organisation instead.
+# organisation_uuid = "7623cc98-5cba-4f15-8498-56fd8ac8d1ec"
+
+# Create events unpublished. Flip to true, or pass --publish, once reviewed.
+publish = false
+
+verify_ssl = true
